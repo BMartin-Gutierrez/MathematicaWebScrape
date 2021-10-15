@@ -1,0 +1,101 @@
+(* Brian Martin *)
+(* SDG Web Scrape *)
+
+(*Be sure to check your SDG folder directory and change as needed*)
+
+CurrentFolder = NotebookDirectory[];
+TargetFolder = StringJoin[CurrentFolder, "SDG_Targets_Indicators/"];
+
+Sort by file names before importing
+
+Indicators = FileNames["SDG_Indicator*", TargetFolder];
+Targets = FileNames["SDG_Target*", TargetFolder];
+
+(*Sorted to know order of final excel output *)
+SortedTargets = 
+  SortBy[Targets, ToExpression[ StringSplit[#, {"_", "."}][[-2]] ] &];
+SortedIndicators = 
+  SortBy[Indicators, ToExpression[ StringSplit[#, {"_", "."}][[-2]] ] &];
+
+Import text of sorted files
+
+TargetText = 
+  Table[Import[SortedTargets[[i]], "Text"], {i, Length[SortedTargets]}];
+IndicatorText = 
+  Table[Import[SortedIndicators[[i]], "Text"], {i, Length[SortedIndicators]}];
+
+Remove initial numbers/letters
+
+TargetTextIntermediate = 
+  StringSplit[#, ","] & /@ Map[StringSplit[#, "\n"] &, TargetText];
+TargetIndicatorIntermediate = 
+  StringSplit[#, ","] & /@ Map[StringSplit[#, "\n"] &, IndicatorText];
+
+TargetTextNoNumbers = 
+  Map[Drop[StringSplit[#], 1] &, TargetTextIntermediate, {3}];
+TargetIndicatorNoNumbers = 
+  Map[Drop[StringSplit[#], 1] &, TargetIndicatorIntermediate, {3}];
+
+Loss of accuracy when removing all punctuation and creating paragraph
+
+CleanTargetText = 
+  Map[StringRiffle[#] &, 
+   Map[RemoveDiacritics[
+      StringReplace[StringRiffle[#], PunctuationCharacter -> ""]] &, 
+    TargetTextNoNumbers, {2, 3}]];
+
+CleanIndicatorText = 
+  Map[StringRiffle[#] &, 
+   Map[RemoveDiacritics[
+      StringReplace[StringRiffle[#], PunctuationCharacter -> ""]] &, 
+    TargetIndicatorNoNumbers, {2, 3}]];
+
+AutoScrape Function
+
+(*AutoScrape input is a list of desired text to be used as MeshonDemand input \
+*)
+
+AutoScrape [x_] := (FinalData = {};
+  For[i = 1, i <= Length[x], i++,
+   session = StartWebSession[];
+   WebExecute[session, 
+    "OpenPage" -> "https://meshb-prev.nlm.nih.gov/MeSHonDemand"];
+   Pause[2];
+   input = WebExecute[session, "LocateElements" -> "Tag" -> "textarea"]; 
+   WebExecute[session, "TypeElement" -> {input, x[[i]]}];
+   inputSearch = WebExecute[session, "LocateElements" -> "Id" -> "runMOD"]; 
+   WebExecute[session, "ClickElement" -> inputSearch];
+   Pause[27];
+   DownloadButton = 
+    WebExecute[session, "LocateElements" -> "Id" -> "modDownload"]; 
+   WebExecute[session, "ClickElement" -> DownloadButton];
+   Pause[2];
+   TextPointer = WebExecute[session, "LocateElements" -> "Tag" -> "pre"];
+   PageText = WebExecute[session, "ElementText" -> TextPointer];
+   Pause[1];
+   (* Remove unwatned text, only keep mesh tags *)
+   ReducedText = 
+    Drop[StringSplit[
+      StringRiffle[PageText], {"-- PubMed/MEDLINE Similar Citations --", 
+       "-- MeSH Terms --", "-- Relevant MeSH Terms --"}], -1];
+   MeshTerms = DeleteCases[Flatten[StringSplit[ReducedText, "\n" ]], ""];
+   (* Append Mesh terms to list*)
+   AppendTo[FinalData, MeshTerms];
+   DeleteObject[session]
+   ];
+  (*All mesh term data sub lists are padded to the right to ensure a square \
+matrix for transposition*)
+  TransposedMeshTerms = 
+   Transpose[
+    PadRight[FinalData, {Length[FinalData], Max[Map[Length[#] &, FinalData]]},
+      ""]];
+  Return[TransposedMeshTerms];
+  )
+
+Export all Mesh terms to excel
+
+TargetMeshTerms = AutoScrape[CleanTargetText];
+IndicatorMeshTerms = AutoScrape[CleanIndicatorText];
+Export[StringJoin[CurrentFolder, 
+  "\\AllMeshTerms.xlsx"], {"Target Mesh Terms" -> TargetMeshTerms, 
+  "Indicator Mesh Terms" -> IndicatorMeshTerms}]
